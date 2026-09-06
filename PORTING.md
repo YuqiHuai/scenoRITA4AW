@@ -18,7 +18,7 @@ importable from host Python. Both are gone. Everything scenoRITA needs is in the
 
 | v1.0 | 0.52.0 |
 |---|---|
-| `rocker` + 3 containers, `DOCKER_IMAGE_ID` pasted into `config.py` | one container from `harness/ssv2/setup_container.sh`, pinned by digest |
+| `rocker` + 3 containers, `DOCKER_IMAGE_ID` pasted into `config.py` | one container from `./setup_scenorita_container.sh`, pinned by digest |
 | `src/prepare.py` copies 7 shell scripts into `$ADS_ROOT/scripts` | deleted; `prepare.py` is now a preflight check |
 | `environment/container.py` does `docker run`/`docker network create` | `Container` is a thin wrapper over `run_scenario.sh` |
 | `ScenarioReplayer` launches SSv2, polls, moves bags out of `/tmp` | `run_scenario.sh` owns the launch; SSv2 writes to the output dir directly |
@@ -71,7 +71,7 @@ Cost: roughly 20-25 scenarios/hour.
 
 ## 5. Failures that used to be silent
 
-Four changes where the old behaviour produced a *wrong answer* rather than an
+Five changes where the old behaviour produced a *wrong answer* rather than an
 error. These are the ones to know about when comparing v1.0 results to these.
 
 **A run that produced no bag is no longer graded.** `replay_scenario` returns
@@ -79,6 +79,19 @@ whether a `.db3` exists, and the player drops the scenario if not. Previously an
 infrastructure failure flowed into the analyzer, graded as zero violations, and
 told the GA the obstacles were harmless -- when nothing had been measured. Over
 a long campaign that biases the search toward whatever is breaking.
+
+**A scenario Autoware never routed is no longer graded.** Every oracle gates on
+`has_routing_plan()`, so if the mission planner refuses the generated start/goal
+pair the ego never moves and every oracle is silently switched off -- and the
+scenario grades as zero violations, exactly like a clean drive. `analyze` now
+checks for a `/planning/mission_planning/route` message and says so, and
+`analyze_experiment.sh` counts these as `NEVER ROUTED`. This happened on **1 of
+2 scenarios** in the first end-to-end run, so it is not rare: it is a property
+of scenoRITA's ego-route generation, not of the stack. If it dominates a
+campaign, `ScenarioGenerator.generate_ego_car` is what to look at --
+`harness/ssv2/gen_scenario.py` in MozartTest-Autoware has a `routable()` check
+for the same problem, including two corrections about lane changes and
+`road_shoulder` goals learned from the authored scenarios.
 
 **`speed_limit` is optional and is now defaulted.** `get_speed_limits` did an
 unguarded `attributes['speed_limit']` over every vehicle lanelet, and it is
@@ -106,8 +119,23 @@ Installing scenoRITA's requirements unpinned drags in numpy 2.x, which is
 ABI-incompatible with the image's system scipy *and* with the ROS 2 Python
 bindings. `import scipy.interpolate` then fails with "numpy.dtype size changed",
 so grading fails on every scenario while generation still works -- a campaign
-that produces bags and no violations. `harness/ssv2/setup_container.sh` pins
-`numpy<1.25` and `scikit-learn==1.3.2`.
+that produces bags and no violations. `setup_scenorita_container.sh` pins
+`numpy<1.25` and `scikit-learn==1.3.2`, and verifies every import afterwards
+rather than trusting that pip succeeded.
+
+That script is also the whole fresh-machine path: map corpus, container,
+scenario_simulator_v2 build, dependencies, verification. It orchestrates
+MozartTest-Autoware's own scripts rather than reimplementing them, and passes
+the `/scenorita` bind mount through that repo's generic `EXTRA_MOUNTS` hook, so
+the image digest, the map mount and the DDS run flags stay in one place. The
+mount and the pip installs both have to happen at create time -- a mount cannot
+be added to a running container, and pip installs land in the writable layer
+that `docker rm` destroys.
+
+Note that the SSv2 build is *required* and is easy to forget: `/ss2_ws` is a
+bind mount, so a container can look perfectly healthy while having no simulator
+in it, and every scenario then dies before Autoware starts. Both the setup and
+`run_scenorita_experiment.sh`'s preflight check for `/ss2_ws/install`.
 
 ## Verified
 

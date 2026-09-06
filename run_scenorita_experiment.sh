@@ -46,7 +46,12 @@ while [ $# -gt 0 ]; do
 done
 
 COVERAGE="${COVERAGE:-0}"
-USE_OVERLAY="${USE_OVERLAY:-1}"
+# Stock /opt/autoware by default. The instrumented overlay exists to publish
+# /planning/module_activation, and scenoRITA does not read it -- it grades from
+# the rosbag. Driving stock keeps the campaign one build closer to the release
+# under test and removes a behavioural variable nobody here needs.
+# USE_OVERLAY=1 opts back in; COVERAGE=1 implies its own build regardless.
+USE_OVERLAY="${USE_OVERLAY:-0}"
 ALL_MODULES="${ALL_MODULES:-1}"
 
 OUT_HOST="$HERE/out/${EXP_ID}_${MAP}"
@@ -56,7 +61,7 @@ MANIFEST="$OUT_HOST/experiment.txt"
 # ---------------------------------------------------------------- preflight --
 # Each of these fails silently or misleadingly hours later if not checked now.
 docker inspect "$C" >/dev/null 2>&1 || {
-  echo "container $C does not exist -- run $MOZART/harness/ssv2/setup_container.sh" >&2
+  echo "container $C does not exist -- run ./setup_scenorita_container.sh" >&2
   exit 1; }
 [ -d "$MOZART/harness/ssv2" ] || {
   echo "MozartTest-Autoware not found at $MOZART -- set MOZART_REPO" >&2; exit 1; }
@@ -66,9 +71,17 @@ docker inspect "$C" >/dev/null 2>&1 || {
 # mounts rather than the container's existence.
 for m in /scenorita/src/main.py /mozart/harness/ssv2/run_scenario.sh /autoware_map; do
   docker exec "$C" test -e "$m" 2>/dev/null || {
-    echo "$C cannot see $m -- recreate it with $MOZART/harness/ssv2/setup_container.sh" >&2
+    echo "$C cannot see $m -- recreate it with ./setup_scenorita_container.sh" >&2
     exit 1; }
 done
+
+# scenario_simulator_v2 itself. Without it `source /ss2_ws/install/setup.bash`
+# fails and every scenario dies before Autoware starts -- 12 hours of records
+# that are all empty. It is a bind mount, so it can be absent on a container
+# that otherwise looks perfectly healthy.
+docker exec "$C" test -d /ss2_ws/install || {
+  echo "no scenario_simulator_v2 build at /ss2_ws/install -- run ./setup_scenorita_container.sh" >&2
+  exit 1; }
 
 docker exec "$C" test -d "/autoware_map/$MAP" || {
   echo "no map '$MAP' under /autoware_map; available:" >&2
