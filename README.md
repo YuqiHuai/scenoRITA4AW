@@ -29,7 +29,7 @@ Nothing is built or installed on the host. No Autoware checkout, no ROS, no
 `colcon`, no Poetry environment -- `python3 src/main.py` is not a supported way
 to start this and will not work from the host.
 
-`setup_scenorita_container.sh` does five things, each skipped when already done,
+`setup_scenorita_container.sh` does six things, each skipped when already done,
 so re-running after a failure costs only the step that failed:
 
 | | | |
@@ -37,12 +37,15 @@ so re-running after a failure costs only the step that failed:
 | 1 | map corpus | fetches the point clouds for the vector maps committed in the harness repo (`--all-maps` for all 64) |
 | 2 | container | creates `mozart_aw_052` from the pinned image, with this repo mounted at `/scenorita` |
 | 3 | scenario_simulator_v2 | builds SSv2 against the installed 0.52.0, ~6 min |
-| 4 | coverage build | **skipped unless `--with-coverage`**, ~20 min |
-| 5 | dependencies | installs scenoRITA's Python packages, pinned, and verifies every import |
+| 4 | instrumented overlay | the activation beacon, **on by default**, ~5 min (`--no-overlay` to skip) |
+| 5 | coverage build | **skipped unless `--with-coverage`**, ~15 min |
+| 6 | dependencies | installs scenoRITA's Python packages, pinned, and verifies every import |
 
-Add `--with-coverage` only if you intend to run `COVERAGE=1`; scenoRITA grades
-from the rosbag and needs neither the activation beacon nor the gcov build for
-an ordinary campaign.
+The overlay is built by default because `/planning/module_activation` is the
+only signal that says whether a `behavior_path` module ran, and that gap is
+worth discovering before a campaign rather than after it. `--no-overlay` gives
+a deliberately stock campaign. `--with-coverage` is a separate build and only
+pays off if you intend to run `COVERAGE=1`.
 
 It calls `MozartTest-Autoware/harness/ssv2/setup_container.sh`, which owns the
 image, the map corpus and the two colcon workspaces, passing it the `/scenorita`
