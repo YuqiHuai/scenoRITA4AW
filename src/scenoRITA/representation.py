@@ -4,7 +4,7 @@ from typing import List
 
 from deap import base
 
-from autoware_auto_perception_msgs.msg import ObjectClassification
+from autoware_perception_msgs.msg import ObjectClassification
 
 
 @dataclass

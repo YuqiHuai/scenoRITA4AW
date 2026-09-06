@@ -1,143 +1,103 @@
-import time
-import docker
-import subprocess
+"""Driving one scenario.
 
-from autoware.open_scenario import OpenScenario
-from config import ADS_ROOT, MY_SCRIPTS_DIR, DOCKER_CONTAINER_NAME, CONTAINER_NUM, DEFAULT_SCRIPT_PORT, PROJECT_ROOT, \
-    DIR_ROOT, DOCKER_IMAGE_ID, TMP_RECORDS_DIR
-from prepare import init_prepare
-from utils import get_output_dir
+This replaces the v1.0 `Container` class, which started its own containers with
+`docker run`, installed Autoware into them, copied a generated `run_scenario_N.sh`
+in, and killed processes by pattern. All of that is now
+`harness/ssv2/run_scenario.sh` in MozartTest-Autoware, which scenoRITA calls.
+
+The name `Container` is kept because `main.py` and `mylib/workers.py` speak in
+those terms, but there is no container management left here: scenoRITA already
+runs inside the one container, and `run_scenario.sh` detects that and executes
+directly instead of via `docker exec`.
+
+Why call out to a shell script instead of porting its logic here: the script is
+almost entirely scar tissue -- the CycloneDDS participant ceiling, the
+kill-and-verify loop, the renamed final-trajectory topic, the overlay sourcing
+order that makes pluginlib resolve the instrumented modules. A Python
+reimplementation would be a second copy of that knowledge, and the copy would
+drift silently. The sweeps and scenoRITA now drive the same file.
+"""
+import os
+import subprocess
+from pathlib import Path
+from typing import Optional
+
+from config import (
+    ALL_MODULES,
+    COVERAGE,
+    DOCKER_CONTAINER_NAME,
+    MAX_RECORD_TIME,
+    RUN_SCENARIO_SH,
+    SCENARIO_TIMEOUT,
+    USE_OVERLAY,
+)
 
 
 class Container:
-    ads_root: str
-    project_root: str
-    ctn_id: str
-    ctn_name: str
-    script_port: int
-    env_file: str
+    """One Autoware stack. Serial by construction -- see CONTAINER_NUM."""
 
-    is_already_setup: bool
-
-    def __init__(self, ads_root: str, project_root: str, ctn_name: str, ctn_id: str, script_port) -> None:
-        self.ads_root = ads_root
-        self.project_root = project_root
-        self.ctn_id = ctn_id
+    def __init__(self, ctn_name: str = DOCKER_CONTAINER_NAME, ctn_id: str = "0") -> None:
         self.ctn_name = ctn_name
-        self.script_port = script_port
-        self.env_file = "dev.env"
-
-        self.is_already_setup = False
+        self.ctn_id = ctn_id
 
     @property
     def container_name(self) -> str:
-        """
-        Gets the name of the container
-
-        Returns:
-            name: str
-                name of the container
-        """
         return self.ctn_name
 
     def is_running(self) -> bool:
-        """
-        Checks if the container is running
+        """We are inside it. If we are executing, it is running."""
+        return True
 
-        Returns:
-            status: bool
-                True if running, False otherwise
+    # Kept as no-ops so the worker code reads the same as before. The real
+    # stack kill lives in run_scenario.sh, which does it both before AND after
+    # every scenario and *verifies* it -- a fire-and-forget pkill here was what
+    # let leaked stacks shadow later launches.
+    def start_instance(self, restart: bool = False) -> None:
+        return None
+
+    def env_init(self) -> None:
+        return None
+
+    def setup_env(self) -> None:
+        return None
+
+    def kill_process(self) -> None:
+        return None
+
+    def run_scenario(self, scenario_path: Path, out_dir: Path,
+                     log_path: Optional[Path] = None) -> int:
+        """Drive one scenario to completion. Returns the script's exit code.
+
+        `out_dir` is where scenario_test_runner writes result.junit.xml and the
+        rosbag; it must be a path that exists inside the container, which every
+        path under PROJECT_ROOT is.
         """
+        env = dict(os.environ)
+        env.update(
+            OUT=str(out_dir),
+            GLOBAL_TIMEOUT=str(SCENARIO_TIMEOUT),
+            RECORD="true",
+            USE_OVERLAY=USE_OVERLAY,
+            COVERAGE=COVERAGE,
+            ALL_MODULES=ALL_MODULES,
+            MOZART_AW_CONTAINER=self.ctn_name,
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        log = open(log_path, "w") if log_path else subprocess.DEVNULL
         try:
-            if docker.from_env().containers.get(self.container_name).status == 'running':
-                self.is_already_setup = True
-                return True
-        except:
-            return False
-
-    def kill_process(self):
-        cmd = f"docker exec {self.container_name} /bin/bash {MY_SCRIPTS_DIR}/kill_process.sh"
-        subprocess.run(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def remove_last_tmp_files(self):
-        cmd = f"docker exec {self.container_name} /bin/bash rm -rf {TMP_RECORDS_DIR}/*"
-        subprocess.run(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def scenario_script_update(self, scenario: OpenScenario):
-        script_path = f"{MY_SCRIPTS_DIR}/run_scenario_{self.ctn_id}.sh"
-
-        with open(f"{script_path}", "w") as f:
-            f.write(f"#!/bin/bash\n")
-            f.write(f"cd {ADS_ROOT}\n")
-            f.write(f"source install/setup.bash\n")
-            f.write(f"ros2 launch scenario_test_runner scenario_test_runner.launch.py \\\n")
-            f.write(f"  architecture_type:=awf/universe \\\n")
-            f.write(f"  record:=true \\\n")
-            f.write(f"  port:={str(self.script_port)} \\\n")
-            f.write(f'  scenario:="{str(get_output_dir())}/input/{scenario.get_id()}.yaml" \\\n')
-            f.write(f"  sensor_model:=sample_sensor_kit \\\n")
-            f.write(f"  vehicle_model:=sample_vehicle")
-        return script_path
-
-    def start_instance(self, restart=False):
-        """
-        Starts an Apollo instance
-
-        Parameters:
-            restart : bool
-                forcing container to restart
-        """
-        if not restart and self.is_running():
-            self.remove_last_tmp_files()
-            return
-
-        cmd = f'docker network create --driver bridge c{self.ctn_id}'
-        subprocess.run(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        cmd = f'docker run -itd --gpus all --privileged --name {self.ctn_name} --network c{self.ctn_id} -v {ADS_ROOT}:{ADS_ROOT} -v {DIR_ROOT}/autoware_map:{DIR_ROOT}/autoware_map -v {PROJECT_ROOT}:{PROJECT_ROOT} -e DISPLAY -e TERM -e QT_X11_NO_MITSHM=1 -v /tmp/.X11-unix:/tmp/.X11-unix -v /etc/localtime:/etc/localtime:ro {DOCKER_IMAGE_ID}'
-        subprocess.run(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def move_bashrc(self):
-        cmd = f"docker exec {self.container_name} /bin/bash {ADS_ROOT}/scripts/move_bashrc.sh"
-        subprocess.run(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def env_init(self):
-        self.kill_process()
-        self.move_bashrc()
-
-    def stop_recorder(self):
-        cmd = f"docker exec {self.container_name} /bin/bash {MY_SCRIPTS_DIR}/stop_recorder.sh"
-        subprocess.run(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def setup_env(self):
-        if self.is_already_setup:
-            print(f"Container {self.ctn_name} already setup.")
-            return
-        cmd = f"docker exec --env-file {MY_SCRIPTS_DIR}/{self.env_file} {self.container_name} /bin/bash {MY_SCRIPTS_DIR}/setup_env.sh"
-        subprocess.run(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"Container {self.ctn_name} setup complete.")
-
-    def replay_example(self):
-        cmd = f"docker exec --env-file {MY_SCRIPTS_DIR}/{self.env_file} {self.container_name} /bin/bash {MY_SCRIPTS_DIR}/run_scenario.sh"
-        p = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-        # p.wait()
-
-
-if __name__ == '__main__':
-    init_prepare()
-
-    x = 3
-    containers = [Container(ADS_ROOT, f'{DOCKER_CONTAINER_NAME}_{x}', str(x), DEFAULT_SCRIPT_PORT + x) for x in
-                  range(CONTAINER_NUM)]
-
-    for ctn in containers:
-        ctn.start_instance()
-        ctn.env_init()
-        ctn.setup_env()
-
-    print("Replaying examples")
-    for ctn in containers:
-        ctn.replay_example()
-
-    time.sleep(60)
+            # `timeout` is a backstop only: run_scenario.sh already passes
+            # SCENARIO_TIMEOUT to SSv2 as global_timeout. This catches the case
+            # where the launch itself wedges before SSv2 can enforce anything,
+            # which would otherwise stall a 12-hour campaign indefinitely.
+            return subprocess.call(
+                ["/bin/bash", RUN_SCENARIO_SH, str(scenario_path)],
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=SCENARIO_TIMEOUT + MAX_RECORD_TIME + 180,
+            )
+        except subprocess.TimeoutExpired:
+            return -1
+        finally:
+            if log_path:
+                log.close()

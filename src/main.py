@@ -1,5 +1,6 @@
 import multiprocessing as mp
 import shutil
+import sys
 import threading
 from pathlib import Path
 from time import perf_counter
@@ -11,7 +12,7 @@ from loguru import logger
 
 from autoware.map_service import load_map_service
 from environment.container import Container
-from config import ADS_ROOT, DOCKER_CONTAINER_NAME, DEFAULT_SCRIPT_PORT, CONTAINER_NUM, PROJECT_ROOT
+from config import CONTAINER_NUM, DOCKER_CONTAINER_NAME
 from mylib.clustering import cluster
 from mylib.workers import analysis_worker, generator_worker, player_worker
 from prepare import init_prepare
@@ -22,15 +23,29 @@ from autoware.open_scenario import OpenScenario
 from scenoRITA.representation import ObstacleFitness
 from utils import get_output_dir, set_up_gflags, set_up_logging
 
+# Distinct from 1 so run_scenorita_experiment.sh can tell "the stack wedged,
+# restart the container and start a fresh run" from an ordinary crash.
+EXIT_STACK_WEDGED = 17
+
 
 def evaluate_scenarios(
         containers: List[Container], scenarios: List[OpenScenario]
 ) -> int:
+    """Generate, drive and grade one generation.
+
+    THREE PHASES, NOT A PIPELINE. v1.0 ran generators, players and analyzers
+    concurrently, which is right when you have several containers and wrong
+    here. Grading a bag is CPU-heavy -- it deserialises thousands of messages
+    and runs shapely over every one -- and this project measured that Autoware
+    under CPU contention does not merely run slower, it *plans differently*.
+    Overlapping the analyzers with the drive would therefore corrupt exactly
+    the trajectories being analysed. So: generate everything, drive them one at
+    a time with the machine otherwise quiet, then grade in parallel once no
+    stack is running.
+    """
     num_evaluated = 0
     num_workers = 5
-    multi_process_generate = True
     with mp.Manager() as manager:
-        # set up queues
         pending_queue = manager.Queue()
         play_queue = manager.Queue()
         analysis_queue = manager.Queue()
@@ -40,37 +55,33 @@ def evaluate_scenarios(
         for _ in range(num_workers):
             pending_queue.put(None)
 
-        # set up processes
-        if multi_process_generate:
-            generator_processes = [
-                threading.Thread(
-                    target=generator_worker,
-                    args=(
-                        logger,
-                        pending_queue,
-                        play_queue,
-                        get_output_dir(),
-                    ),
-                )
-                for _ in range(num_workers)
-            ]
-        else:
-            generator_processes = []
-
-        player_processes = [
+        # Phase 1: generate. Pure CPU on the map, no stack running.
+        generator_processes = [
             threading.Thread(
-                target=player_worker,
-                args=(
-                    containers[x],
-                    logger,
-                    play_queue,
-                    analysis_queue,
-                    get_output_dir(),
-                    FLAGS.dry_run,
-                ),
+                target=generator_worker,
+                args=(logger, pending_queue, play_queue, get_output_dir()),
             )
-            for x in range(len(containers))
+            for _ in range(num_workers)
         ]
+        for p in generator_processes:
+            p.start()
+        for p in generator_processes:
+            p.join()
+        play_queue.put(None)
+
+        # Phase 2: drive, serially, with nothing else competing.
+        player_worker(
+            containers[0],
+            logger,
+            play_queue,
+            analysis_queue,
+            get_output_dir(),
+            FLAGS.dry_run,
+        )
+        for _ in range(num_workers):
+            analysis_queue.put(None)
+
+        # Phase 3: grade. No stack is running, so this may use the machine.
         analyzer_processes = [
             mp.Process(
                 target=analysis_worker,
@@ -84,30 +95,8 @@ def evaluate_scenarios(
             )
             for _ in range(num_workers)
         ]
-
-        # start processes
-        for p in generator_processes + player_processes + analyzer_processes:
+        for p in analyzer_processes:
             p.start()
-
-        if not multi_process_generate:
-            for scenario in scenarios:
-                target_dir = get_output_dir()
-                target_file = Path(target_dir, "input")
-                target_file.parent.mkdir(parents=True, exist_ok=True)
-                logger.info(f"{scenario.get_id()}: generate start")
-                scenario.export_to_file(target_file)
-                logger.info(f"{scenario.get_id()}: generate end")
-                play_queue.put(scenario)
-
-        # wait for processes to finish
-        for p in generator_processes:
-            p.join()
-        for _ in range(len(player_processes)):
-            play_queue.put(None)
-        for p in player_processes:
-            p.join()
-        for _ in range(len(analyzer_processes)):
-            analysis_queue.put(None)
         for p in analyzer_processes:
             p.join()
 
@@ -136,8 +125,17 @@ def evaluate_scenarios(
             violations_dir = Path(get_output_dir(), "violations")
             violations_dir.mkdir(parents=True, exist_ok=True)
             for violation in results[sce_id].violations:
-                # copy record to violations folder
-                shutil.copytree(results[sce_id].record.parent, violations_dir, dirs_exist_ok=True)
+                # Keep each violating record under its own scenario id. v1.0
+                # copied the bag directory's *contents* into violations/ itself,
+                # so every violating scenario in a run merged into one directory
+                # and all but the last .db3 was overwritten -- which over a
+                # 12-hour campaign means the evidence for a violation is the
+                # trajectory of a different scenario.
+                shutil.copytree(
+                    results[sce_id].record,
+                    Path(violations_dir, sce_id),
+                    dirs_exist_ok=True,
+                )
                 violation_csv = Path(violations_dir, f"{violation.main_type}.csv")
                 if not violation_csv.exists():
                     with open(violation_csv, "w") as f:
@@ -150,13 +148,12 @@ def evaluate_scenarios(
 
 
 def start_containers() -> List[Container]:
-    containers = [Container(ADS_ROOT, PROJECT_ROOT, f'{DOCKER_CONTAINER_NAME}_{x}', str(x), DEFAULT_SCRIPT_PORT + x) for
-                  x in range(CONTAINER_NUM)]
-    for ctn in containers:
-        ctn.start_instance()
-        ctn.env_init()
-        ctn.setup_env()
-    return containers
+    """The stack scenoRITA drives. One, deliberately -- see CONTAINER_NUM.
+
+    Nothing is started here any more: scenoRITA runs inside the container, and
+    run_scenario.sh brings up and tears down an Autoware stack per scenario.
+    """
+    return [Container(DOCKER_CONTAINER_NAME, str(x)) for x in range(CONTAINER_NUM)]
 
 
 def main(argv):
@@ -213,9 +210,19 @@ def main(argv):
             )
             failure_counter += 1
             if failure_counter >= 3:
-                logger.error(f"Generation {generation_counter}: Restarting containers.")
-                for ctn in containers:
-                    ctn.start_instance(True)
+                # scenoRITA runs inside the container, so it cannot restart it
+                # -- that is run_scenorita_experiment.sh's job, and this exit
+                # code is the signal for it. Stopping is the right response:
+                # three consecutive generations that could not be fully
+                # evaluated means the stack is wedged, and every further
+                # generation would select on fallback fitness, quietly turning
+                # the rest of a 12-hour campaign into a random walk.
+                logger.error(
+                    f"Generation {generation_counter}: three consecutive generations "
+                    "incomplete -- the stack is wedged; exiting for the campaign "
+                    "driver to restart the container"
+                )
+                sys.exit(EXIT_STACK_WEDGED)
         else:
             failure_counter = 0
         logger.info(f"Generation {generation_counter}: evaluation done")

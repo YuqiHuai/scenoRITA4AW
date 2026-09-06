@@ -2,7 +2,7 @@ import math
 
 import matplotlib.pyplot as plt
 import shapely
-from autoware_auto_perception_msgs.msg import TrackedObject
+from autoware_perception_msgs.msg import TrackedObject
 from geometry_msgs.msg import Quaternion
 from shapely import Point
 from autoware.map_service import load_map_service

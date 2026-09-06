@@ -7,7 +7,7 @@ from typing import Set, Tuple
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
-from autoware_auto_perception_msgs.msg import TrackedObjects, TrackedObject
+from autoware_perception_msgs.msg import TrackedObjects, TrackedObject
 from nav_msgs.msg import Odometry
 
 from autoware.rosbag_reader import ROSBagReader

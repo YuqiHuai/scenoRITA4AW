@@ -31,12 +31,15 @@ class RecordAnalyzer:
     def analyze(self):
         has_localization = False
         has_ground_truth = False
+        has_route = False
         reader = ROSBagReader(self.record_path)
         for topic, message, t in reader.read_messages():
             if not has_localization and topic == '/localization/kinematic_state':
                 has_localization = True
             if not has_ground_truth and topic == '/perception/object_recognition/ground_truth/objects':
                 has_ground_truth = True
+            if not has_route and topic == '/planning/mission_planning/route':
+                has_route = True
             if topic in self.topic_names():
                 msg = reader.deserialize_msg(message, topic)
                 try:
@@ -44,15 +47,28 @@ class RecordAnalyzer:
                 except OracleInterrupt:
                     break
         del reader
-        # assert has_localization, "No localization in record"
-        # assert has_ground_truth, "No ground truth in record"
+        # Each of these means the scenario was NOT measured, and must be told
+        # apart from a scenario that was measured and violated nothing --
+        # otherwise the GA reads an infrastructure or scenario-validity failure
+        # as "these obstacles are harmless" and selects toward it.
         if not has_localization:
-            # if there are no localization messages
-            logger.warning("No localization in record")
+            logger.warning(f"{self.record_path}: no localization -- the ego never localised")
             return None
         if not has_ground_truth:
-            # if there are no ground truth perception messages
-            logger.warning("No ground truth in record")
+            logger.warning(f"{self.record_path}: no ground truth -- perception published nothing")
+            return None
+        if not has_route:
+            # Autoware never accepted a route, so the ego never drove and every
+            # oracle is gated off (they all require has_routing_plan). This is a
+            # property of the *generated scenario*, not of the stack: the ego's
+            # start/goal pair was one the mission planner refused. Observed on
+            # 1 of 2 in the first end-to-end run, so it is not rare -- if it
+            # dominates a campaign, the ego route generator is what to look at,
+            # not the harness.
+            logger.warning(
+                f"{self.record_path}: no route was ever published -- the mission "
+                "planner refused this scenario's start/goal pair; the ego never drove"
+            )
             return None
         return self.get_results()
 

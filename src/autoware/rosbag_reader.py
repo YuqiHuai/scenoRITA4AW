@@ -8,6 +8,10 @@ from rclpy.serialization import deserialize_message
 from yaml import SafeLoader
 
 
+class RecordTypeUnavailable(Exception):
+    """A topic an oracle asked for is recorded as a type we cannot import."""
+
+
 class ROSBagReader:
 
     def __init__(self, bag_dir_path: str):
@@ -20,10 +24,24 @@ class ROSBagReader:
         self.sql_cursor = self.sql_connection.cursor()
         self.db3_path = db3_path
         self.yaml = None
-        # create a message type map
+        # Create a message type map, tolerating types we cannot import.
+        #
+        # Resolving every type eagerly is what this used to do, and on a 0.52.0
+        # bag it dies before reading a single message: SSv2 records all ~830
+        # topics, including its own `traffic_simulator_msgs`, which are not on
+        # the path unless /ss2_ws/install is sourced. The oracles only ever
+        # touch four topics, so an unimportable type on any of the other 826 is
+        # not a reason to fail. It becomes an error only if something asks to
+        # deserialize it, and `deserialize_msg` says so by name.
         topics_data = self.sql_cursor.execute("SELECT id, name, type FROM topics").fetchall()
         self.topic_id = {name_of: id_of for id_of, name_of, type_of in topics_data}
-        self.topic_msg_message = {name_of: get_message(type_of) for id_of, name_of, type_of in topics_data}
+        self.topic_type = {name_of: type_of for id_of, name_of, type_of in topics_data}
+        self.topic_msg_message = {}
+        for _id, name_of, type_of in topics_data:
+            try:
+                self.topic_msg_message[name_of] = get_message(type_of)
+            except (ImportError, AttributeError, ValueError):
+                continue
 
         self.fetch_all_msgs_sql = "select topics.name as topic, data as message, timestamp as t from messages join topics on messages.topic_id = topics.id order by timestamp"
 
@@ -39,7 +57,13 @@ class ROSBagReader:
         return rows
 
     def deserialize_msg(self, data, topic_name):
-        return deserialize_message(data, self.topic_msg_message[topic_name])
+        msg_type = self.topic_msg_message.get(topic_name)
+        if msg_type is None:
+            raise RecordTypeUnavailable(
+                f"{topic_name} is recorded as {self.topic_type.get(topic_name)}, "
+                "which is not importable in this environment"
+            )
+        return deserialize_message(data, msg_type)
 
     def __del__(self):
         if self.sql_connection:

@@ -31,7 +31,10 @@ class Speeding(BasicMetric):
             self.trace.append((False, t, -1, dict()))
         else:
             current_lane = current_lanes[0]
-            lane_speed_limit = float(current_lane.attributes['speed_limit'])
+            # Via the map service, not the raw attribute: `speed_limit` is
+            # optional in lanelet2 and this corpus does not carry it on every
+            # vehicle lanelet. See MapService.get_speed_limits.
+            lane_speed_limit = self.map_service.get_speed_limit_of(current_lane.id)
             self.obs_fitness = min(self.obs_fitness, lane_speed_limit - ego_velocity)
             if ego_velocity > lane_speed_limit * (1 + Speeding.TOLERANCE):
                 features = self.get_basic_info_from_localization(message)

@@ -1,5 +1,20 @@
 # NOTES when running scenoRITA
 
+> **These notes are from the v1.0 implementation.** The design notes below --
+> traffic rules, obstacle constraints, ego generation, the Scenario Format v2
+> conversion -- still describe what the code does. The *installation* and
+> *environment* advice does not: there is no host Autoware build, no reduced
+> Autoware checkout, and no `run_scenario.sh` in `data/scripts` any more.
+> See [PORTING.md](PORTING.md) and [README.md](README.md).
+>
+> Specifically superseded below: the "Reduced Installation" section (lanelet2
+> now comes from the container), the `autoware/utils.py` and
+> `autoware/autoware_record/record.py` notes (the reader now tolerates
+> unimportable types), the "Record efficiency" section (SSv2 records all ~830
+> topics and writes them where we ask), and "Integrate Traffic Lights Feature"
+> (`architecture_type` is set to `awf/universe/20250130` by the harness).
+
+
 ## Record Analysis & Scenario Generation
 
 If you only need to generate test scenarios or analyze the record file, or if your PC cannot support the full installation of Autoware, you can opt for the [Reduced Installation of Autoware](https://github.com/lethal233/autoware) instead. This reduced version includes the essential packages needed to analyze maps and deserialize record data.

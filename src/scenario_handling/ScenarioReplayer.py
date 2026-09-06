@@ -1,35 +1,52 @@
-import time
-import subprocess
+"""Play one scenario and leave its rosbag where the analyzer expects it.
+
+v1.0 launched scenario_test_runner itself, polled the process, called
+`stop_recorder.sh` when MAX_RECORD_TIME elapsed, then moved the bag out of
+`/tmp/scenario_test_runner`. Three of those four steps are gone: run_scenario.sh
+owns the launch and the timeout, and SSv2 is told where to write directly, so
+nothing has to be moved out of /tmp afterwards -- which also means a container
+restart can no longer lose a finished run's bag.
+"""
+import shutil
 from pathlib import Path
 
 from autoware.open_scenario import OpenScenario
-from config import MAX_RECORD_TIME, MY_SCRIPTS_DIR, AUTOWARE_CMD_PREPARE_TIME, TMP_RECORDS_DIR
 from utils import get_output_dir
 
 
-def replay_scenario(scenario: OpenScenario, container):
-    container.kill_process()
-    start_replay(scenario, container)
-    move_scenario_record_dir(scenario, container)
+def scenario_out_dir(scenario_id: str) -> Path:
+    """Where run_scenario.sh is told to put this scenario's output."""
+    return Path(get_output_dir(), "records", scenario_id)
 
 
-def move_scenario_record_dir(scenario: OpenScenario, container):
-    target_output_path = Path(get_output_dir(), "records")
-    target_output_path.mkdir(parents=True, exist_ok=True)
-    cmd = f'docker exec {container.container_name} mv {TMP_RECORDS_DIR}/{scenario.get_id()} "{target_output_path}"'
-    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    p.wait()
+def record_dir(scenario_id: str) -> Path:
+    """The rosbag directory itself.
+
+    scenario_test_runner nests output as
+    <out>/scenario_test_runner/<scenario name>/<scenario name>/, with the .db3
+    and metadata.yaml in the innermost directory. The analyzer needs that
+    innermost path, not the root we passed in.
+    """
+    return Path(scenario_out_dir(scenario_id), "scenario_test_runner", scenario_id, scenario_id)
 
 
-def start_replay(scenario: OpenScenario, container):
-    script_path = container.scenario_script_update(scenario)
-    cmd = f"docker exec --env-file {MY_SCRIPTS_DIR}/{container.env_file} {container.container_name} /bin/bash {script_path}"
-    p = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time_start = time.time()
-    while p.poll() is None:
-        if MAX_RECORD_TIME + AUTOWARE_CMD_PREPARE_TIME < time.time() - time_start:
-            container.stop_recorder()
-            break
-    time.sleep(0.5)
-    container.kill_process()
-    p.wait()
+def replay_scenario(scenario: OpenScenario, container) -> bool:
+    """Drive one scenario. True if it produced a readable bag.
+
+    A missing bag is reported as a failure rather than an empty result: an
+    infrastructure failure that grades as "no violations" is indistinguishable
+    from a scenario the ADS handled correctly, and over a 12-hour campaign that
+    silently biases the search toward whatever was breaking.
+    """
+    sce_id = scenario.get_id()
+    out_dir = scenario_out_dir(sce_id)
+    # Runs are re-driven when a generation is re-evaluated; a stale bag from a
+    # previous attempt at the same id would otherwise be graded as this one's.
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    scenario_path = Path(get_output_dir(), "input", f"{sce_id}.yaml")
+    container.run_scenario(scenario_path, out_dir, log_path=Path(out_dir, "run.log"))
+
+    bag = record_dir(sce_id)
+    return bag.is_dir() and any(bag.glob("*.db3"))

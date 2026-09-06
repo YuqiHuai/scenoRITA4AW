@@ -1,7 +1,7 @@
 import math
 import random
 
-from autoware_auto_perception_msgs.msg import TrackedObject
+from autoware_perception_msgs.msg import TrackedObject
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Point, Quaternion
 from shapely import LineString, Polygon

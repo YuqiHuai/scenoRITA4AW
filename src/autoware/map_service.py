@@ -11,9 +11,9 @@ from lanelet2 import traffic_rules
 from shapely import LineString
 
 from config import ADS_MAP_DIR, SUPPORTED_MAPS
-from lanelet2_extension_python.projection import MGRSProjector
-import lanelet2_extension_python.utility.query as query
-import lanelet2_extension_python.utility.utilities as utilities
+from autoware_lanelet2_extension_python.projection import MGRSProjector
+import autoware_lanelet2_extension_python.utility.query as query
+import autoware_lanelet2_extension_python.utility.utilities as utilities
 
 from geometry_msgs.msg import Point, Pose
 from pathlib import Path
@@ -280,13 +280,36 @@ class MapService:
         else:
             raise NotImplementedError(f"Unknown obstacle type: {_t}")
 
+    # Autoware's own default when a lanelet declares no speed_limit, in km/h.
+    # Used so that one unannotated lanelet cannot take down a whole campaign.
+    DEFAULT_SPEED_LIMIT_KMH = 50.0
+
     def get_speed_limits(self):
+        """Speed limit per vehicle lanelet, in km/h.
+
+        `speed_limit` is optional in lanelet2 and this corpus is not uniform:
+        the attribute is present somewhere in all 64 maps but not on every
+        vehicle lanelet of every map. This used to be an unguarded
+        `attributes['speed_limit']`, and it is reached from `Speeding.__init__`,
+        so a single unannotated lanelet raised KeyError, grading returned None
+        for every scenario on that map, and the map produced no violations at
+        all -- indistinguishable from a map the ADS drove perfectly.
+        """
         if not self.speed_limits:
             self.speed_limits = dict()
-            vehicle_lanes = self.get_vehicle_lanes()
-            for v_lid in vehicle_lanes:
-                self.speed_limits[v_lid] = float(self.get_lane_by_id(v_lid).attributes['speed_limit'])
+            self.lanes_missing_speed_limit = []
+            for v_lid in self.get_vehicle_lanes():
+                attrs = self.get_lane_by_id(v_lid).attributes
+                if 'speed_limit' in attrs:
+                    self.speed_limits[v_lid] = float(attrs['speed_limit'])
+                else:
+                    self.lanes_missing_speed_limit.append(v_lid)
+                    self.speed_limits[v_lid] = self.DEFAULT_SPEED_LIMIT_KMH
         return self.speed_limits
+
+    def get_speed_limit_of(self, lane_id: int) -> float:
+        """Speed limit for one lanelet, defaulted the same way."""
+        return self.get_speed_limits().get(lane_id, self.DEFAULT_SPEED_LIMIT_KMH)
 
     def get_lane_coord_and_heading(self, lane_id: int, s: float):
         """
