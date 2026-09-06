@@ -46,12 +46,27 @@ while [ $# -gt 0 ]; do
 done
 
 COVERAGE="${COVERAGE:-0}"
-# Stock /opt/autoware by default. The instrumented overlay exists to publish
-# /planning/module_activation, and scenoRITA does not read it -- it grades from
-# the rosbag. Driving stock keeps the campaign one build closer to the release
-# under test and removes a behavioural variable nobody here needs.
-# USE_OVERLAY=1 opts back in; COVERAGE=1 implies its own build regardless.
-USE_OVERLAY="${USE_OVERLAY:-0}"
+# The instrumented overlay by default, when it is built.
+#
+# scenoRITA's own grading does not need it -- the oracles read the rosbag. What
+# needs it is analysing a campaign afterwards for WHICH planning behaviours
+# activated: /planning/module_activation is the only uniform signal across both
+# planning layers. virtual_wall and planning_factors cover behavior_velocity
+# only; behavior_path publishes no module status, so on stock Autoware there is
+# no way to tell whether goal_planner, lane_change or start_planner ever ran.
+#
+# Falls back to stock rather than failing when the overlay was not built
+# (setup --no-overlay), because a campaign without activation data is still a
+# valid campaign -- but say so, since the difference is invisible in the bags
+# until someone goes looking for a topic that is not there.
+USE_OVERLAY="${USE_OVERLAY:-1}"
+if [ "$USE_OVERLAY" = 1 ] && [ "$COVERAGE" != 1 ] \
+   && ! docker exec "$C" test -d /aw_ws/install 2>/dev/null; then
+  echo "note: no overlay at /aw_ws/install -- driving stock /opt/autoware." >&2
+  echo "      behavior_path module activation will NOT be recorded." >&2
+  echo "      run ./setup_scenorita_container.sh to build it." >&2
+  USE_OVERLAY=0
+fi
 ALL_MODULES="${ALL_MODULES:-1}"
 
 OUT_HOST="$HERE/out/${EXP_ID}_${MAP}"
