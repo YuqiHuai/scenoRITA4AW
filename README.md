@@ -15,16 +15,21 @@ changed and why.
 
 1. Docker
 2. The `MozartTest-Autoware` repository checked out next to this one
-3. The container built by its `harness/ssv2/setup_container.sh`, which mounts
-   the map corpus, this repository, and that one
 
 ```bash
-cd ../MozartTest-Autoware/harness/ssv2
-./setup_container.sh          # pulls the pinned image, mounts, installs deps
+./setup_scenorita_container.sh   # pinned image, mounts, deps -- both repos' worth
 ```
 
 That is the whole installation. Nothing is built and nothing is installed on the
 host.
+
+It calls `MozartTest-Autoware/harness/ssv2/setup_container.sh`, which owns the
+image, the map corpus and the two colcon workspaces, passing it the `/scenorita`
+mount; then it installs the Python packages that are ours. Those used to be
+installed by that script and are not any more -- a container shared by several
+tools cannot carry one tool's dependency list in another tool's setup. Their
+pins are load-bearing (see the script), so they moved here rather than being
+dropped.
 
 ## Running an experiment
 

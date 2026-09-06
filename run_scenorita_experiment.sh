@@ -78,6 +78,13 @@ if [ "$COVERAGE" = 1 ]; then
   docker exec "$C" test -d /ss2_ws/cov_ws/install || {
     echo "COVERAGE=1 but no build at /ss2_ws/cov_ws -- run 'mozart-autoware coverage build'" >&2
     exit 1; }
+  # Zero ONCE, here, and tell run_scenario.sh not to. Its own zeroing is
+  # per-scenario, which for a campaign that reports once at the end means the
+  # report covers only the last scenario driven -- a number indistinguishable
+  # from the campaign's own, and far smaller.
+  docker exec "$C" bash -c     'source /opt/autoware/setup.bash
+     lcov --directory /ss2_ws/cov_ws/build --zerocounters -q 2>/dev/null; true'
+  echo "coverage counters zeroed once for the whole campaign"
 fi
 
 # ----------------------------------------------------------------- manifest --
@@ -117,7 +124,8 @@ while :; do
   docker exec --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e ADS_MAP_DIR=/autoware_map \
-    -e COVERAGE="$COVERAGE" -e USE_OVERLAY="$USE_OVERLAY" -e ALL_MODULES="$ALL_MODULES" \
+    -e COVERAGE="$COVERAGE" -e COVERAGE_ZERO=0 \
+    -e USE_OVERLAY="$USE_OVERLAY" -e ALL_MODULES="$ALL_MODULES" \
     -e PYTHONUNBUFFERED=1 \
     "$C" bash -lc "
       set -e
@@ -156,10 +164,16 @@ echo "=== results ==="
 if [ "$COVERAGE" = 1 ]; then
   echo
   echo "=== coverage ==="
-  # Counters accumulate across every scenario the campaign drove, because
-  # run_scenario.sh only zeroes them when COVERAGE=1 is set per scenario --
-  # which it is here, so this is the union over the campaign's last run.
-  ( cd "$MOZART" && mozart-autoware coverage report "scenorita_${EXP_ID}" ) \
+  # The union over every scenario this campaign drove: counters were zeroed
+  # once in the preflight above, and run_scenario.sh was told (COVERAGE_ZERO=0)
+  # not to zero them again per scenario.
+  # `mozart-autoware` is that repo's uv project script: on PATH only if its
+  # venv happens to be active, which it is not for a campaign started from
+  # here. Fall back to `uv run`, or the report -- the whole point of
+  # COVERAGE=1 -- is lost after the hours that produced it.
+  COV=(mozart-autoware)
+  command -v mozart-autoware >/dev/null 2>&1 || COV=(uv run mozart-autoware)
+  ( cd "$MOZART" && "${COV[@]}" coverage report "scenorita_${EXP_ID}" ) \
     | tee -a "$MANIFEST" || echo "coverage report failed" >&2
 fi
 
