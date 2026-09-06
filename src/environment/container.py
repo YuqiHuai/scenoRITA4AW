@@ -26,7 +26,6 @@ from config import (
     ALL_MODULES,
     COVERAGE,
     DOCKER_CONTAINER_NAME,
-    MAX_RECORD_TIME,
     RUN_SCENARIO_SH,
     SCENARIO_TIMEOUT,
     USE_OVERLAY,
@@ -94,7 +93,12 @@ class Container:
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                timeout=SCENARIO_TIMEOUT + MAX_RECORD_TIME + 180,
+                # SCENARIO_TIMEOUT is what SSv2 enforces; this adds slack for
+                # startup, the two verified stack kills and the beacon read, and
+                # catches only the case where the launch wedges before SSv2 can
+                # enforce anything -- which would otherwise stall a 12-hour
+                # campaign indefinitely.
+                timeout=SCENARIO_TIMEOUT + 240,
             )
         except subprocess.TimeoutExpired:
             return -1

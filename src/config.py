@@ -36,15 +36,34 @@ DOCKER_CONTAINER_NAME = os.environ.get("MOZART_AW_CONTAINER", "mozart_aw_052")
 # of its own results for wall clock. The stack is ~500% CPU on its own.
 CONTAINER_NUM = 1
 
-# Wall-clock ceiling for one scenario, passed to SSv2 as global_timeout. Too
-# short manufactures failures indistinguishable from real ones: the ego reaches
-# PLANNING, never engages, and the run reports no violation. Startup alone is
-# ~20 s on this stack, so this must comfortably exceed startup + MAX_RECORD_TIME.
-SCENARIO_TIMEOUT = int(os.environ.get("SCENARIO_TIMEOUT", "150"))
+# How long a scenario may run, in SIMULATED seconds. Written into every
+# generated scenario as the StopTrigger's SimulationTimeCondition; the scenario
+# ends earlier when the ego reaches its goal.
+#
+# This was hardcoded to 180 in open_scenario.py. v1.0 could not actually use it:
+# ScenarioReplayer killed the rosbag recorder after MAX_RECORD_TIME (60 s), so
+# the observation window was 60 s no matter what the scenario said. Nothing kills
+# the recorder now, so the scenario really does get its full duration.
+SCENARIO_DURATION = int(os.environ.get("SCENARIO_DURATION", "180"))
 
-# How long the ego is given to drive its route. The scenario's own StopTrigger
-# ends it earlier when the goal is reached.
-MAX_RECORD_TIME = int(os.environ.get("MAX_RECORD_TIME", "60"))
+# Wall-clock ceiling for one scenario, passed to SSv2 as global_timeout.
+#
+# MUST EXCEED SCENARIO_DURATION plus startup, and it is derived rather than set
+# so it cannot silently fall behind. Getting this wrong is invisible: a
+# global_timeout below the scenario's own duration truncates every long scenario
+# at the timeout, and a truncated run looks exactly like one that ended
+# normally. It happened here -- a 150 s timeout against a 180 s scenario
+# produced a 154.0 s bag that read as a complete run.
+#
+# Startup to WaitingForRoute is ~20 s measured; 60 s of headroom covers that
+# plus the concealer's initialise handshake.
+SCENARIO_TIMEOUT = int(os.environ.get("SCENARIO_TIMEOUT", str(SCENARIO_DURATION + 60)))
+if SCENARIO_TIMEOUT <= SCENARIO_DURATION:
+    raise ValueError(
+        f"SCENARIO_TIMEOUT ({SCENARIO_TIMEOUT}) must exceed SCENARIO_DURATION "
+        f"({SCENARIO_DURATION}) plus startup, or every long scenario is "
+        "truncated and the truncation is indistinguishable from a normal end"
+    )
 
 
 PROJECT_ROOT = os.environ.get("SCENORITA_ROOT", str(Path(__file__).parent.parent))

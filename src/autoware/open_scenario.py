@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 
 from ruamel.yaml import YAML
 
-from config import ADS_MAP_DIR, PROJECT_NAME
+from config import ADS_MAP_DIR, PROJECT_NAME, SCENARIO_DURATION
 from scenoRITA.representation import Obstacle, ObstacleMotion, ObstacleType, EgoCar
 from autoware.utils import obs_hash
 
@@ -769,7 +769,11 @@ class OpenScenario:
                                                                     "conditionEdge": "none",
                                                                     "ByValueCondition": {
                                                                         "SimulationTimeCondition": {
-                                                                            "value": 180,
+                                                                            # Simulated seconds. Config, not a literal:
+                                                                            # SCENARIO_TIMEOUT is derived from it, and
+                                                                            # a harness timeout below this value
+                                                                            # truncates every long scenario invisibly.
+                                                                            "value": SCENARIO_DURATION,
                                                                             "rule": "greaterThan"
                                                                         }
                                                                     }
