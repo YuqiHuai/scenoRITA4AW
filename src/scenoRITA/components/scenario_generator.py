@@ -9,7 +9,7 @@ from geometry_msgs.msg import Point
 
 from autoware.open_scenario import OpenScenario
 from autoware.utils import generate_adc_polygon, generate_polygon, get_s_from_start_lst, get_rounded_rand, \
-    get_obstacle_specific_type, get_obstacle_type
+    get_obstacle_specific_type, get_obstacle_type, AUTOWARE_VEHICLE_LENGTH
 
 from ..representation import (
     EgoCar,
@@ -18,6 +18,27 @@ from ..representation import (
     ObstaclePosition,
     ObstacleType, PositionEstimate,
 )
+
+def goal_s_on(lane_length: float) -> float:
+    """Where along a lane to put the ego's goal.
+
+    Not the lane's end. Autoware validates a goal by its footprint, and
+    `DefaultPlanner::check_goal_footprint_inside_lanes` builds ONE corridor from
+    the goal lanelet plus `getNextLanelets().front()` -- a single arbitrary
+    successor, not the union of them. A goal on the end point therefore overhangs
+    into whichever successor happens to be first, and on a lane that forks that is
+    a coin flip: "Goal's footprint exceeds lane!", no route, and a scenario whose
+    ego never engages and burns the whole timeout.
+
+    So keep the whole footprint on the goal lanelet. The vehicle's front reaches
+    AUTOWARE_VEHICLE_LENGTH - AUTOWARE_VEHICLE_back_edge_to_center = 3.79 m ahead
+    of base_link, which is where the goal pose sits; cutting back a full vehicle
+    length clears that with room to spare. Short lanes clamp to 1.5, the same
+    floor the initial position uses -- the check adds preceding lanelets too, so a
+    mid-lane goal on a short lane is fine.
+    """
+    return max(1.5, lane_length - AUTOWARE_VEHICLE_LENGTH)
+
 
 ObstacleConstraints = {
     ObstacleType.CAR: {
@@ -236,7 +257,6 @@ class ScenarioGenerator:
                     continue
 
                 final_lane_id = -1
-                need_to_cut = True
                 while True:
                     if len(successors) == 0:
                         break
@@ -248,18 +268,15 @@ class ScenarioGenerator:
                             candidate = random.choice(final_lane_cg_neighbours)
                             if self.map_service.get_length_of_lane(candidate) >= k_min_lane_length:
                                 final_lane_id = candidate
-                    # out of lanes condition
+                    # out of lanes condition. A lane shorter than the cut is only
+                    # usable when something follows it -- the goal then sits mid-lane
+                    # and the footprint leans on the preceding lanelet instead.
                     if self.map_service.get_length_of_lane(final_lane_id) - 6.0 <= 0:
                         if len(self.map_service.get_successors_for_lane(final_lane_id)) > 0:
-                            need_to_cut = False
                             break
                         else:
                             successors.remove(final_lane_id)  # remove this candidate, out of lanes
                     else:
-                        if len(self.map_service.get_successors_for_lane(final_lane_id)) > 0:
-                            need_to_cut = False  # no need to cut since there is another successor lane
-                        else:
-                            need_to_cut = True  # need to cut since there is no other successor lane
                         break
 
                 if len(successors) == 0 or final_lane_id == -1:
@@ -277,7 +294,7 @@ class ScenarioGenerator:
                     ),
                     PositionEstimate(
                         final_lane_id,
-                        self.map_service.get_length_of_lane(final_lane_id) - 6 if need_to_cut else self.map_service.get_length_of_lane(final_lane_id),
+                        goal_s_on(self.map_service.get_length_of_lane(final_lane_id)),
                     ),
                 )
         else:
@@ -286,24 +303,17 @@ class ScenarioGenerator:
                 lane_id = random.choice(options)
                 lane_length = self.map_service.get_length_of_lane(lane_id)
                 descendants = self.map_service.get_reachable_descendants(lane_id)
-                need_to_cut = True
                 target_lane_id = -1
                 while len(descendants) > 0:
                     target_lane_id = random.choice(list(descendants))
                     if self.map_service.get_length_of_lane(target_lane_id) - 6.0 <= 0:
                         if len(self.map_service.get_successors_for_lane(target_lane_id)) > 0:
-                            need_to_cut = False
                             break
                         else:
+                            descendants.remove(target_lane_id)  # out of lanes
                             target_lane_id = -1
-                            descendants.remove(target_lane_id)  # remove this candidate, out of lanes
                     else:
-                        if len(self.map_service.get_successors_for_lane(target_lane_id)) > 0:
-                            need_to_cut = False  # no need to cut since there is another successor lane
-                            break
-                        else:
-                            need_to_cut = True  # need to cut since there is no other successor lane
-                            break
+                        break
                 if target_lane_id != -1:
                     return EgoCar(
                         PositionEstimate(
@@ -311,7 +321,7 @@ class ScenarioGenerator:
                         ),  # at the end of the lane
                         PositionEstimate(
                             target_lane_id,
-                            self.map_service.get_length_of_lane(target_lane_id) - 6.0 if need_to_cut else self.map_service.get_length_of_lane(target_lane_id),
+                            goal_s_on(self.map_service.get_length_of_lane(target_lane_id)),
                         ),
                     )
                 options.remove(lane_id)  # if this lane cannot reach any other lane, remove it from the options
