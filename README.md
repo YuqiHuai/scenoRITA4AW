@@ -11,91 +11,46 @@ host build. The v1.0 instructions -- `vcs import`, `colcon build`, a second
 three parallel containers -- are all gone. See [PORTING.md](PORTING.md) for what
 changed and why.
 
-## From a fresh machine to a running experiment
+## Running it
 
-Docker is the only prerequisite. Clone the two repositories side by side, then
-two scripts:
+The entry points live in **MozartTest-Autoware**, at `harness/scenorita/`,
+next to `harness/doppel/`. That repository owns the stack both searches drive
+-- the pinned image, the map corpus, the scenario_simulator_v2 build and the
+instrumented overlay -- and setting it up from two places is how the two
+searches drift onto different planners without saying so.
 
 ```bash
-git clone <MozartTest-Autoware>          # the harness, maps and container
-git clone <scenoRITA4AW>                 # this repo -- side by side, not nested
-
-cd scenoRITA4AW
-./setup_scenorita_container.sh                                  # ~15 min, once
+cd ../MozartTest-Autoware/harness/scenorita
+./setup_scenorita_container.sh                                  # ~20 min, once
 ./run_scenorita_experiment.sh --map sample-map-planning --hours 12
+./analyze_experiment.sh ../../../scenoRITA4AW/out/<id>_<map>    # re-summarise
 ```
 
-Nothing is built or installed on the host. No Autoware checkout, no ROS, no
-`colcon`, no Poetry environment -- `python3 src/main.py` is not a supported way
-to start this and will not work from the host.
+See `harness/scenorita/README.md` there for the flags, the six setup steps and
+what each one costs. Nothing is built or installed on the host: no Autoware
+checkout, no ROS, no `colcon`, no Poetry environment -- `python3 src/main.py`
+is not a supported way to start this and will not work from the host.
 
-`setup_scenorita_container.sh` does six things, each skipped when already done,
-so re-running after a failure costs only the step that failed:
+## What stays in this repository
 
-| | | |
-|---|---|---|
-| 1 | map corpus | fetches the point clouds for the vector maps committed in the harness repo (`--all-maps` for all 64) |
-| 2 | container | creates `mozart_aw_052` from the pinned image, with this repo mounted at `/scenorita` |
-| 3 | scenario_simulator_v2 | builds SSv2 against the installed 0.52.0, ~6 min |
-| 4 | instrumented overlay | the activation beacon, **on by default**, ~5 min (`--no-overlay` to skip) |
-| 5 | coverage build | **skipped unless `--with-coverage`**, ~15 min |
-| 6 | dependencies | installs scenoRITA's Python packages, pinned, and verifies every import |
-
-The overlay is built by default because `/planning/module_activation` is the
-only signal that says whether a `behavior_path` module ran, and that gap is
-worth discovering before a campaign rather than after it. `--no-overlay` gives
-a deliberately stock campaign. `--with-coverage` is a separate build and only
-pays off if you intend to run `COVERAGE=1`.
-
-It calls `MozartTest-Autoware/harness/ssv2/setup_container.sh`, which owns the
-image, the map corpus and the two colcon workspaces, passing it the `/scenorita`
-mount; then it installs the Python packages that are ours. Those used to be
-installed by that script and are not any more -- a container shared by several
-tools cannot carry one tool's dependency list in another tool's setup. Their
-pins are load-bearing (see the script), so they moved here rather than being
-dropped.
-
-## Running an experiment
-
-```bash
-./run_scenorita_experiment.sh                                  # 12 h, sample-map-planning
-./run_scenorita_experiment.sh --map ces2024_demo --hours 12
-COVERAGE=1 ./run_scenorita_experiment.sh --hours 12            # + line coverage
-```
-
-| flag | default | |
-|---|---|---|
-| `--map` | `sample-map-planning` | any of the 64 under `/autoware_map` |
-| `--hours` | `12` | wall-clock budget for the search |
-| `--num-scenario` | `20` | scenarios per generation |
-| `--min-obs` / `--max-obs` | `5` / `15` | obstacles per scenario |
-| `--id` | timestamp | experiment id, and the output directory name |
-
-Environment: `COVERAGE=1` drives the gcov build and reports line coverage at the
-end (needs `--with-coverage` at setup); `USE_OVERLAY=1` drives the instrumented
-overlay instead of stock `/opt/autoware`; `ALL_MODULES=0` leaves the eleven
-non-default planning modules off.
-
-The default is **stock Autoware**. The instrumented overlay exists to publish
-`/planning/module_activation`, which scenoRITA does not read -- it grades from
-the rosbag -- so driving stock keeps a campaign one build closer to the release
-under test.
-
-Everything lands in `out/<id>_<map>/`:
+The search itself, and everything a campaign produces. `src/` is the GA, the
+scenario generator and the oracles; `out/<id>_<map>/` is where a campaign
+lands, because this checkout is what gets bind-mounted into the container at
+`/scenorita`:
 
 ```
 experiment.txt      what was run, which Autoware, which revisions -- written before the run
 campaign.log        the full log
 input/              every scenario generated, as OpenSCENARIO YAML
-records/<sce_id>/   that scenario's rosbag, junit result and run.log
+records/<sce_id>/    that scenario's rosbag, junit result and run.log
 violations/         a copy of each violating record, plus one CSV per violation type
 ```
 
-Re-summarise a finished or interrupted run without re-driving it:
-
-```bash
-./analyze_experiment.sh out/0906_143000_sample-map-planning
-```
+Its Python dependency list is scenoRITA's too, and setup installs it: the
+shared `harness/ssv2/setup_container.sh` deliberately does not carry one tool's
+dependencies, and the pins are load-bearing -- unpinned, numpy goes to 2.x,
+`import scipy.interpolate` dies, and a campaign produces bags and no violations
+for hours before anyone notices.
 
 ## What runs where
 
