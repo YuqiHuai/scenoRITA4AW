@@ -104,7 +104,7 @@ docker exec "$C" test -d "/autoware_map/$MAP" || {
 
 if [ "$COVERAGE" = 1 ]; then
   docker exec "$C" test -d /ss2_ws/cov_ws/install || {
-    echo "COVERAGE=1 but no build at /ss2_ws/cov_ws -- run 'mozart-autoware coverage build'" >&2
+    echo "COVERAGE=1 but no build at /ss2_ws/cov_ws -- run ./setup_scenorita_container.sh --with-coverage" >&2
     exit 1; }
   # Zero ONCE, here, and tell run_scenario.sh not to. Its own zeroing is
   # per-scenario, which for a campaign that reports once at the end means the
